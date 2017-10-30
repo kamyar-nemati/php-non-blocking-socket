@@ -11,9 +11,9 @@ error_reporting(E_ALL);
 set_time_limit(0);
 
 //reserved flags to control socket communication
-define("STX", "<-STX->"/*chr(2)*/); //start of text ----------------------------
-define("EOT", "<-EOT->"/*chr(4)*/); //end of transmission ----------------------
-define("CAN", "<-CAN->"/*chr(24)*/); //cancel ----------------------------------
+define("STX", /*"<-STX->"*/chr(2));
+define("EOT", /*"<-EOT->"*/chr(4));
+define("CAN", /*"<-CAN->"*/chr(24));
 
 //end of line character
 define("ENDL", chr(10));
@@ -70,35 +70,10 @@ try {
 //accept new clients
 function begin_accept() {
     //get global variables
-    $pid = &$GLOBALS['pid'];
-    $child_pid = &$GLOBALS['child_pid'];
-    $serverSocket = &$GLOBALS['serverSocket'];
-    
-    //fork the process to handle each client separately
-    $child_pid = pcntl_fork();
-    
-    //this is for parent process to warn if it failed to fork
-    if ($child_pid === -1) {
-        /*
-         * the variable 'child_pid' shall never be anything but
-         * zero(0) within the child process thread. However, the
-         * parent thread may either have the created child process
-         * id or (-1) upon failure.
-         */
-        echo "Failed to create handler" . ENDL;
-    }
-    
-    //the main process must not accept any client
-    if (getmypid() === $pid) {
-        return;
-    }
-    
-    /*
-     * From this point onward, the child process handles the client.
-     * The parent process will skip the rest and waits for signal to
-     * accept more clients by throwing new child processes.
-     */
-    
+    global $pid;
+    global $child_pid;
+    global $serverSocket;
+
     //handling client
     try {
         //accepting the client
@@ -109,12 +84,31 @@ function begin_accept() {
             throw new Exception("onAccept: {$last_err_msg}");
         }
         
-        //signal the parent/main process to throw an new child process
-        $psx = posix_kill($pid, SIGUSR1);
-        echo "Sending signal " . SIGUSR1 . 
-                " to process id {$pid} " . 
-                        ($psx ? "was successful" : "failed") . ENDL;
+        //fork the process to handle each client separately
+        $child_pid = pcntl_fork();
 
+        //this is for parent process to warn if it failed to fork
+        if ($child_pid === -1) {
+            /*
+             * the variable 'child_pid' shall never be anything but
+             * zero(0) within the child process thread. However, the
+             * parent thread may either have the created child process
+             * id or (-1) upon failure.
+             */
+            echo "Failed to create handler" . ENDL;
+        }
+        
+        //the main process must only accept client, no handling
+        if (getmypid() === $pid) {
+            return begin_accept();
+        }
+
+        /*
+         * From this point onward, the child process handles the client.
+         * The parent process will continue accepting more clients and
+         * throwing new child processes to handle them.
+         */
+        
         $clientHost = NULL;
         $clientPort = NULL;
         
@@ -220,36 +214,10 @@ function begin_shutdown(&$client) {
     unset($client);
 }
 
-//signal handler
-$sig_handler = function ($sig_no) {
-    switch ($sig_no) {
-        case SIGUSR1:
-            echo "The signal caught" . ENDL;
-            //start accepting a new client on another child process
-            begin_accept();
-            break;
-
-        default:
-            echo "A signal caught: " . $sig_no . ENDL;
-            break;
-    }
-};
-
-//throw a new child process to wait for client
+//start accepting clients asynchronously
 begin_accept();
 
-//if (getmypid() === $pid) {
-//    while (TRUE) {
-//        pcntl_signal_dispatch();
-//    }
-//}
-
 if (getmypid() === $pid) {    
-    //define the signal handler
-    pcntl_signal(SIGUSR1, $sig_handler);
-//    pcntl_sigwaitinfo(array(SIGUSR1));
-//    pcntl_sigprocmask(SIG_BLOCK, array(SIGUSR1));
-
     //waiting for all child processes to finish
     $p_stat = NULL;
     pcntl_wait($p_stat);

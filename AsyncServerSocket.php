@@ -11,9 +11,9 @@ error_reporting(E_ALL);
 set_time_limit(0);
 
 //reserved flags to control socket communication
-define("STX", /*"<-STX->"*/chr(2));
-define("EOT", /*"<-EOT->"*/chr(4));
-define("CAN", /*"<-CAN->"*/chr(24));
+define("STX", "<-STX->"/*chr(2)*/);
+define("EOT", "<-EOT->"/*chr(4)*/);
+define("CAN", "<-CAN->"/*chr(24)*/);
 
 //end of line character
 define("ENDL", chr(10));
@@ -31,6 +31,31 @@ const _LENGTH = 1024;
 $config = parse_ini_file("config.ini", TRUE);
 $host = $config['server']['host'];
 $port = $config['server']['port'];
+
+//determine server termination
+$server_listening = TRUE;
+
+//process signal handler
+$sig_handler = function ($sig) {
+    global $server_listening;
+    switch ($sig) {
+        case SIGTERM:
+        case SIGHUP:
+        case SIGINT:
+        case SIGABRT:
+            echo "Signal caught: " . $sig . ENDL;
+            $server_listening = FALSE;
+            break;
+        default :
+            break;
+    }
+};
+
+//signal handlers definition
+pcntl_signal(SIGTERM, $sig_handler);
+pcntl_signal(SIGHUP, $sig_handler);
+pcntl_signal(SIGINT, $sig_handler);
+pcntl_signal(SIGABRT, $sig_handler);
 
 //initiating the socket
 try {
@@ -73,6 +98,7 @@ function begin_accept() {
     global $pid;
     global $child_pid;
     global $serverSocket;
+    global $server_listening;
 
     //handling client
     try {
@@ -100,7 +126,11 @@ function begin_accept() {
         
         //the main process must only accept client, no handling
         if (getmypid() === $pid) {
-            return begin_accept();
+            //accept while listening
+            while ($server_listening) {
+                return begin_accept();
+            }
+            echo "Stopping server..." . ENDL;
         }
 
         /*
@@ -145,7 +175,7 @@ function begin_read(&$client) {
             //get rid of rubbish around the received packet
             $client->buffer = trim($packet);
 
-            echo "Packet received: {$client->buffer}" . ENDL;
+            echo "Packet received (from {$client->host}:{$client->port}): {$client->buffer}" . ENDL;
 
             //check if the 'Cancel' flag is received
             if ($client->buffer === CAN) {

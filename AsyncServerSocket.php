@@ -3,6 +3,7 @@
 //keep process id
 $pid = getmypid(); //the main/parent's process id
 $child_pid = NULL; //the child process id
+$sub_pid_arr = []; //the list of all forked/created child processes
 
 //show all sorts of error messages
 error_reporting(E_ALL);
@@ -32,30 +33,14 @@ $config = parse_ini_file("config.ini", TRUE);
 $host = $config['server']['host'];
 $port = $config['server']['port'];
 
-//determine server termination
+//the server-listening flag handles termination
 $server_listening = TRUE;
 
-//process signal handler
-$sig_handler = function ($sig) {
-    global $server_listening;
-    switch ($sig) {
-        case SIGTERM:
-        case SIGHUP:
-        case SIGINT:
-        case SIGABRT:
-            echo "Signal caught: " . $sig . ENDL;
-            $server_listening = FALSE;
-            break;
-        default :
-            break;
-    }
-};
+//the server-sleeping flag handles process stop and continuation
+$server_sleeping = FALSE;
 
-//signal handlers definition
-pcntl_signal(SIGTERM, $sig_handler);
-pcntl_signal(SIGHUP, $sig_handler);
-pcntl_signal(SIGINT, $sig_handler);
-pcntl_signal(SIGABRT, $sig_handler);
+//the frequency of checking whether server is sleeping or not (seconds)
+const _FOR_A_WHILE = 2;
 
 //initiating the socket
 try {
@@ -97,8 +82,10 @@ function begin_accept() {
     //get global variables
     global $pid;
     global $child_pid;
+    global $sub_pid_arr;
     global $serverSocket;
     global $server_listening;
+    global $server_sleeping;
 
     //handling client
     try {
@@ -118,19 +105,41 @@ function begin_accept() {
             /*
              * the variable 'child_pid' shall never be anything but
              * zero(0) within the child process thread. However, the
-             * parent thread may either have the created child process
+             * parent thread may either have the created child's process
              * id or (-1) upon failure.
              */
             echo "Failed to create handler" . ENDL;
         }
         
+        //print out the handler's process id
+        if ($child_pid === 0) {
+            echo "--Handler created: " . posix_getpid() . ENDL;
+        }
+        
         //the main process must only accept client, no handling
         if (getmypid() === $pid) {
-            //accept while listening
-            while ($server_listening) {
+            //keep track of all child processes
+            $sub_pid_arr[$child_pid] = $child_pid;
+            
+            //check for any pending signal
+            pcntl_signal_dispatch();
+            
+            //accepting clients as long as server is listening
+            if ($server_listening) {
+                //checking if the process is stopped
+                while ($server_sleeping) {
+                    sleep(_FOR_A_WHILE);
+                    echo "Zzz..." . ENDL;
+                }
+                //accept new clients
                 return begin_accept();
+            } else {
+                //server gonna get terminated
+                return;
             }
-            echo "Stopping server..." . ENDL;
+        } else {
+            //child process shall not listen for other clients
+            $server_listening = FALSE;
         }
 
         /*
@@ -175,7 +184,7 @@ function begin_read(&$client) {
             //get rid of rubbish around the received packet
             $client->buffer = trim($packet);
 
-            echo "Packet received (from {$client->host}:{$client->port}): {$client->buffer}" . ENDL;
+            echo "Packet received by " . posix_getpid() . ": {$client->buffer}" . ENDL;
 
             //check if the 'Cancel' flag is received
             if ($client->buffer === CAN) {
@@ -244,10 +253,86 @@ function begin_shutdown(&$client) {
     unset($client);
 }
 
+//process control setup
+if (getmypid() === $pid) {
+    //process signal handler
+    $sig_handler = function ($sig_no) {
+        //read global variable
+        global $sub_pid_arr;
+        global $server_listening;
+        global $server_sleeping;
+        //handle signals
+        /*
+         * For the full list of Unix signals and
+         * their detailed descriptions, please visit:
+         * https://en.wikipedia.org/wiki/Signal_(IPC)
+         */
+        switch ($sig_no) {
+            case SIGABRT:
+            case SIGIOT:
+//            case SIGBUS:
+//            case SIGFPE:
+//            case SIGILL:
+//            case SIGPIPE:
+//            case SIGSEGV:
+//            case SIGSYS:
+            case SIGHUP:
+            case SIGINT:
+//            case SIGKILL:
+            case SIGQUIT:
+            case SIGTERM:
+                echo "Server stopped" . ENDL;
+                //tell the server to stop listening to any incoming connections
+                $server_listening = FALSE;
+                break;
+
+//            case SIGSTOP:
+            case SIGTSTP:
+                echo "Server slept" . ENDL;
+                $server_sleeping = TRUE;
+                break;
+
+            case SIGCONT:
+                echo "Server woke up" . ENDL;
+                $server_sleeping = FALSE;
+                break;
+                
+            case SIGCHLD:
+                //clean up all child processes who finished their job
+                foreach ($sub_pid_arr as $key => &$val) {
+                    $ch_stat = NULL;
+                    $ch_psid = pcntl_waitpid($val, $ch_stat, WNOHANG);
+                    if ($ch_psid !== 0) {
+                        //remove the child process id from the list
+                        unset($sub_pid_arr[$val]);
+                        echo "--Handler destroyed: {$ch_psid}" . ENDL;
+                    }
+                }
+                break;
+
+            default:
+                echo "An unexpected signal caught: " . $sig_no . ENDL;
+                break;
+        }
+    };
+    
+    //define the signal handler
+    pcntl_signal(SIGABRT, $sig_handler);
+    pcntl_signal(SIGIOT, $sig_handler);
+    pcntl_signal(SIGHUP, $sig_handler);
+    pcntl_signal(SIGINT, $sig_handler);
+    pcntl_signal(SIGQUIT, $sig_handler);
+    pcntl_signal(SIGTERM, $sig_handler);
+    pcntl_signal(SIGTSTP, $sig_handler);
+    pcntl_signal(SIGCONT, $sig_handler);
+    pcntl_signal(SIGCHLD, $sig_handler);
+}
+
 //start accepting clients asynchronously
 begin_accept();
 
-if (getmypid() === $pid) {    
+//process control
+if (getmypid() === $pid) {
     //waiting for all child processes to finish
     $p_stat = NULL;
     pcntl_wait($p_stat);
@@ -256,6 +341,17 @@ if (getmypid() === $pid) {
     socket_shutdown($serverSocket, 2);
     socket_close($serverSocket);
 }
+
+/*
+ * The code block below is not necessary as
+ * any dying child will usually send the
+ * signal to its parent.
+ */
+//signal the parent that a child is dying
+//if ($child_pid === 0) {
+//    posix_kill($pid, SIGCHLD);
+//}
+
 
 //shutting down
 $id = $child_pid === 0 ? getmypid() : $pid;

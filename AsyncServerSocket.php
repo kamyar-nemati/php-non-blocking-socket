@@ -3,7 +3,7 @@
 //keep process id
 $pid = getmypid(); //the main/parent's process id
 $child_pid = NULL; //the child process id
-$sub_pid_arr = []; //the list of all forked/created child processes
+$sub_pid_arr = []; //the list of all forked/created child/handler processes
 
 //show all sorts of error messages
 error_reporting(E_ALL);
@@ -36,7 +36,7 @@ $port = $config['server']['port'];
 //the server-listening flag handles termination
 $server_listening = TRUE;
 
-//the server-sleeping flag handles process stop and continuation
+//the server-sleeping flag handles server stop and continuation
 $server_sleeping = FALSE;
 
 //the frequency of checking whether server is sleeping or not (seconds)
@@ -46,7 +46,8 @@ const _FOR_A_WHILE = 2;
 try {
     //creating the socket
     $serverSocket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-    if ($serverSocket === FALSE) {
+    if ($serverSocket === FALSE)
+    {
         //creation failed
         $last_err_msg = socket_strerror(socket_last_error());
         throw new Exception("onCreate: {$last_err_msg}");
@@ -55,7 +56,8 @@ try {
     
     //binding the socket
     $foo = socket_bind($serverSocket, $host, $port);
-    if ($foo === FALSE) {
+    if ($foo === FALSE)
+    {
         //binding failed
         $last_err_msg = socket_strerror(socket_last_error($serverSocket));
         throw new Exception("onBind: {$last_err_msg}");
@@ -64,7 +66,8 @@ try {
     
     //making the socket listen
     $bar = socket_listen($serverSocket, $somaxconn);
-    if ($bar === FALSE) {
+    if ($bar === FALSE)
+    {
         //listening failed
         $last_err_msg = socket_strerror(socket_last_error($serverSocket));
         throw new Exception("onListen: {$last_err_msg}");
@@ -91,7 +94,8 @@ function begin_accept() {
     try {
         //accepting the client
         $clientSock = socket_accept($serverSocket);
-        if ($clientSock === FALSE) {
+        if ($clientSock === FALSE)
+        {
             //accepting failed
             $last_err_msg = socket_strerror(socket_last_error($serverSocket));
             throw new Exception("onAccept: {$last_err_msg}");
@@ -126,8 +130,14 @@ function begin_accept() {
             
             //accepting clients as long as server is listening
             if ($server_listening) {
+                
                 //checking if the process is stopped
                 while ($server_sleeping) {
+                    
+                    //check for any pending signal
+                    pcntl_signal_dispatch();
+                    
+                    //sleep
                     sleep(_FOR_A_WHILE);
                     echo "Zzz..." . ENDL;
                 }
@@ -153,7 +163,8 @@ function begin_accept() {
         
         //get client's info
         $yow = socket_getpeername($clientSock, $clientHost, $clientPort);
-        if ($yow === FALSE) {
+        if ($yow === FALSE)
+        {
             echo "Failed to get client's identity" . ENDL;
         }
         echo "Connection accepted from {$clientHost}:{$clientPort}" . ENDL;
@@ -176,7 +187,8 @@ function begin_read(&$client) {
         try {
             //read packets from client
             $packet = socket_read($client->socket, _LENGTH, PHP_NORMAL_READ);
-            if ($packet === FALSE) {
+            if ($packet === FALSE)
+            {
                 $last_err_msg = socket_strerror(socket_last_error($client->socket));
                 throw new Exception("onRead: {$last_err_msg}");
             }
@@ -187,7 +199,8 @@ function begin_read(&$client) {
             echo "Packet received by " . posix_getpid() . ": {$client->buffer}" . ENDL;
 
             //check if the 'Cancel' flag is received
-            if ($client->buffer === CAN) {
+            if ($client->buffer === CAN)
+            {
                 echo "Connection terminated by client" . ENDL;
                 //abort upon cancellation
                 $aborted = TRUE;
@@ -226,7 +239,8 @@ function begin_write(&$client) {
     try {
         //write
         $gee = socket_write($client->socket, $client->message, strlen($client->message));
-        if ($gee === FALSE) {
+        if ($gee === FALSE)
+        {
             $last_err_msg = socket_strerror(socket_last_error($client->socket));
             throw new Exception("onWrite: {$last_err_msg}");
 //            throw new Exception();
@@ -246,10 +260,10 @@ function begin_shutdown(&$client) {
 
         echo "Connection closed from {$client->host}:{$client->port}" . ENDL;
     } catch (Exception $ex) {
-
+        //do nothing...
     }
 
-    //release memory
+    //release memory (maybe)
     unset($client);
 }
 
@@ -261,6 +275,7 @@ if (getmypid() === $pid) {
         global $sub_pid_arr;
         global $server_listening;
         global $server_sleeping;
+        
         //handle signals
         /*
          * For the full list of Unix signals and
@@ -281,23 +296,26 @@ if (getmypid() === $pid) {
 //            case SIGKILL:
             case SIGQUIT:
             case SIGTERM:
+//            case SIGSTOP:
+            case SIGTSTP: {
                 echo "Server stopped" . ENDL;
                 //tell the server to stop listening to any incoming connections
                 $server_listening = FALSE;
                 break;
+            }
 
-//            case SIGSTOP:
-            case SIGTSTP:
-                echo "Server slept" . ENDL;
-                $server_sleeping = TRUE;
+            case SIGUSR1: {
+                if ($server_sleeping) {
+                    echo "Server woke up" . ENDL;
+                    $server_sleeping = FALSE;
+                } else {
+                    echo "Server slept" . ENDL;
+                    $server_sleeping = TRUE;
+                }
                 break;
-
-            case SIGCONT:
-                echo "Server woke up" . ENDL;
-                $server_sleeping = FALSE;
-                break;
-                
-            case SIGCHLD:
+            }
+            
+            case SIGCHLD: {
                 //clean up all child processes who finished their job
                 foreach ($sub_pid_arr as $key => &$val) {
                     $ch_stat = NULL;
@@ -309,10 +327,12 @@ if (getmypid() === $pid) {
                     }
                 }
                 break;
+            }
 
-            default:
+            default: {
                 echo "An unexpected signal caught: " . $sig_no . ENDL;
                 break;
+            }
         }
     };
     
@@ -324,8 +344,8 @@ if (getmypid() === $pid) {
     pcntl_signal(SIGQUIT, $sig_handler);
     pcntl_signal(SIGTERM, $sig_handler);
     pcntl_signal(SIGTSTP, $sig_handler);
-    pcntl_signal(SIGCONT, $sig_handler);
-    pcntl_signal(SIGCHLD, $sig_handler);
+    pcntl_signal(SIGUSR1, $sig_handler);
+    pcntl_signal(SIGCHLD, $sig_handler); //sent by children upon destruction
 }
 
 //start accepting clients asynchronously

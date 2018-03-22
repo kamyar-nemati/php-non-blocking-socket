@@ -5,6 +5,8 @@ $pid = getmypid(); //the main/parent's process id
 $child_pid = NULL; //the child process id
 $sub_pid_arr = []; //the list of all forked/created child/handler processes
 
+print "Server PID: {$pid}" . PHP_EOL;
+
 //show all sorts of error messages
 error_reporting(E_ALL);
 
